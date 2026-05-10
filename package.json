@@ -1,10 +1,9 @@
 {
-  "name": "spacingjs",
-  "version": "1.1.0",
-  "description": "Measure spacing between elements on webpage.",
-  "main": "./dist/spacing.js",
-  "module": "./dist/spacing.js",
-  "types": "./dist/types/index.d.ts",
+  "name": "@tomiaa/spacingjs",
+  "version": "1.2.0",
+  "description": "在 spacingjs 基础上扩展：双模式（Alt 悬停 / 多点固定）、模式切换、嵌套与最近邻智能连线。Measure spacing between elements — fork with multi-select and smart pairing.",
+  "main": "./dist/spacing.min.js",
+  "module": "./dist/spacing.min.js",
   "files": [
     "dist",
     "src"
@@ -19,16 +18,30 @@
     "ext": "node extensions.config.js",
     "clean": "rimraf dist"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/stevenlei/spacingjs.git"
+    "url": "git+https://github.com/tomiaa12/spacingjs.git"
   },
-  "author": "Steven Lei",
+  "keywords": [
+    "spacing",
+    "spacingjs",
+    "measure",
+    "design",
+    "devtools",
+    "pixel",
+    "layout"
+  ],
+  "author": "tomiaa12 (fork), Steven Lei (original spacingjs)",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/stevenlei/spacingjs/issues"
+    "url": "https://github.com/tomiaa12/spacingjs/issues"
   },
-  "homepage": "https://github.com/stevenlei/spacingjs#readme",
+  "homepage": "https://github.com/tomiaa12/spacingjs#readme",
+  "unpkg": "dist/spacing.min.js",
+  "jsdelivr": "dist/spacing.min.js",
   "devDependencies": {
     "@babel/core": "^7.23.0",
     "@babel/preset-env": "^7.22.20",
@@ -40,7 +53,5 @@
     "webpack": "^5.88.2",
     "webpack-bundle-analyzer": "^4.9.1",
     "webpack-cli": "^5.1.4"
-  },
-  "unpkg": "dist/spacing.min.js",
-  "jsdelivr": "dist/spacing.min.js"
+  }
 }

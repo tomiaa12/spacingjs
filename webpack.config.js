@@ -5,8 +5,8 @@ const { version } = require("./package.json");
 const BundleAnalyzerPlugin = require('webpack-bundle-analyzer').BundleAnalyzerPlugin;
 
 const banner = `/*!
- * Spacing.js v${version}
- * Copyright (c) 2021-${new Date().getFullYear()} Steven Lei
+ * @tomiaa/spacingjs v${version} (fork of spacingjs by Steven Lei)
+ * Copyright (c) 2021-${new Date().getFullYear()} Steven Lei; fork changes by tomiaa12
  * Released under the MIT License.
  */`;
 

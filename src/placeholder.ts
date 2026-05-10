@@ -95,5 +95,11 @@ export function createPlaceholderElement(
 }
 
 export function clearPlaceholderElement(type: PlaceholderType): void {
+  if (type === 'pinned') {
+    document
+      .querySelectorAll('.spacing-js-pinned-placeholder')
+      .forEach((node) => node.remove());
+    return;
+  }
   document.querySelector(`.spacing-js-${type}-placeholder`)?.remove();
 }
