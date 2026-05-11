@@ -181,6 +181,62 @@ export function placeMark(
   }
 }
 
+function formatGapText(pixels: number): string {
+  if (pixels === 0) return '0px';
+  if (pixels < 1) return '<1px';
+  return `${pixels}px`;
+}
+
+/**
+ * 通用「不重叠」距离绘制：处理任意两个不相交矩形之间的水平/垂直间距。
+ * - 有水平投影重叠 → 仅绘制纵向距离 dy（位于投影中线 x）
+ * - 有垂直投影重叠 → 仅绘制横向距离 dx（位于投影中线 y）
+ * - 完全无投影重叠 → 同时绘制 dx 与 dy，相交于「rect1 距 rect2 最近的角点」
+ *   修复了 placeMark(edgeToEdge=true) 在无投影重叠时直接 return 导致的「左右没相邻就没距离」bug。
+ */
+export function placeGapMarks(rect1: Rect, rect2: Rect): void {
+  const horizontalOverlap =
+    Math.min(rect1.right, rect2.right) > Math.max(rect1.left, rect2.left);
+  const verticalOverlap =
+    Math.min(rect1.bottom, rect2.bottom) > Math.max(rect1.top, rect2.top);
+
+  let dx = 0;
+  if (rect1.left >= rect2.right) dx = Math.round(rect1.left - rect2.right);
+  else if (rect2.left >= rect1.right) dx = Math.round(rect2.left - rect1.right);
+
+  let dy = 0;
+  if (rect1.top >= rect2.bottom) dy = Math.round(rect1.top - rect2.bottom);
+  else if (rect2.top >= rect1.bottom) dy = Math.round(rect2.top - rect1.bottom);
+
+  if (dx > 0) {
+    const lineLeft = rect1.left >= rect2.right ? rect2.right : rect1.right;
+    const lineY = verticalOverlap
+      ? Math.floor(
+          (Math.max(rect1.top, rect2.top) +
+            Math.min(rect1.bottom, rect2.bottom)) /
+            2
+        )
+      : rect1.top >= rect2.bottom
+      ? rect1.top
+      : rect1.bottom;
+    createLine(dx, 1, lineY, lineLeft, formatGapText(dx), 'y');
+  }
+
+  if (dy > 0) {
+    const lineTop = rect1.top >= rect2.bottom ? rect2.bottom : rect1.bottom;
+    const lineX = horizontalOverlap
+      ? Math.floor(
+          (Math.max(rect1.left, rect2.left) +
+            Math.min(rect1.right, rect2.right)) /
+            2
+        )
+      : rect1.left >= rect2.right
+      ? rect1.left
+      : rect1.right;
+    createLine(1, dy, lineTop, lineX, formatGapText(dy), 'x');
+  }
+}
+
 export function removeMarks(): void {
   document
     .querySelectorAll<HTMLSpanElement>('.spacing-js-marker')

@@ -3,7 +3,7 @@ import {
   clearPlaceholderElement,
   createPlaceholderElement,
 } from './placeholder';
-import { placeMark, removeMarks } from './marker';
+import { placeMark, placeGapMarks, removeMarks } from './marker';
 
 import { Spacing as SpacingType, SpacingMode, SpacingStartOptions } from './type';
 
@@ -18,9 +18,14 @@ let isAltKeyDown: boolean = false;
 let currentMode: SpacingMode = 'default';
 let pinnedElements: HTMLElement[] = [];
 let pinnedRefreshRaf: number | null = null;
-let clickMultiRedrawRaf: number | null = null;
+let multiRedrawRaf: number | null = null;
+
+function isMultiMode(mode: SpacingMode = currentMode): boolean {
+  return mode === 'click-multi' || mode === 'size-only';
+}
 
 let started: boolean = false;
+let enabled: boolean = true;
 
 const PIN_COLORS = [
   '#e53935',
@@ -161,8 +166,14 @@ const Spacing: SpacingType = {
     window.addEventListener('keydown', unifiedKeyDown);
     window.addEventListener('keyup', unifiedKeyUp);
     window.addEventListener('mousemove', unifiedMouseMove);
+    // 也监听 pointermove：Chrome DevTools 设备模式（手机模拟）下
+    // 鼠标移动可能只触发 pointermove 而不再触发 mousemove。
+    // PointerEvent 是 MouseEvent 的子类，签名兼容；scheduleMultiRedraw
+    // 已用 rAF 去抖，重复触发是无害的。
+    window.addEventListener('pointermove', unifiedMouseMove);
     window.addEventListener('mouseout', unifiedMouseOut);
-    window.addEventListener('click', clickMultiHandler, true);
+    window.addEventListener('pointerout', unifiedMouseOut);
+    window.addEventListener('click', multiClickHandler, true);
     document.addEventListener('scroll', pinnedScrollOrResizeHandler, true);
     window.addEventListener('resize', pinnedScrollOrResizeHandler);
   },
@@ -173,8 +184,10 @@ const Spacing: SpacingType = {
     window.removeEventListener('keydown', unifiedKeyDown);
     window.removeEventListener('keyup', unifiedKeyUp);
     window.removeEventListener('mousemove', unifiedMouseMove);
+    window.removeEventListener('pointermove', unifiedMouseMove);
     window.removeEventListener('mouseout', unifiedMouseOut);
-    window.removeEventListener('click', clickMultiHandler, true);
+    window.removeEventListener('pointerout', unifiedMouseOut);
+    window.removeEventListener('click', multiClickHandler, true);
     document.removeEventListener('scroll', pinnedScrollOrResizeHandler, true);
     window.removeEventListener('resize', pinnedScrollOrResizeHandler);
 
@@ -182,9 +195,9 @@ const Spacing: SpacingType = {
       cancelAnimationFrame(pinnedRefreshRaf);
       pinnedRefreshRaf = null;
     }
-    if (clickMultiRedrawRaf != null) {
-      cancelAnimationFrame(clickMultiRedrawRaf);
-      clickMultiRedrawRaf = null;
+    if (multiRedrawRaf != null) {
+      cancelAnimationFrame(multiRedrawRaf);
+      multiRedrawRaf = null;
     }
 
     cleanUpPinned();
@@ -198,11 +211,65 @@ const Spacing: SpacingType = {
     isAltKeyDown = false;
     currentMode = 'default';
     started = false;
+    enabled = true; // 重置启停状态，避免 disable→stop→start 后仍处于禁用
 
     if (delayedRef) {
       clearTimeout(delayedRef);
       delayedRef = null;
     }
+  },
+
+  enable() {
+    if (!started) {
+      // 未启动：按当前 mode 自动 start，并保证为启用态
+      enabled = true;
+      this.start({ mode: currentMode });
+      return;
+    }
+    enabled = true;
+  },
+
+  disable() {
+    enabled = false;
+    if (!started) return;
+
+    cleanUpPinned();
+    cleanUp();
+    hoveringElement = null;
+    isAltKeyDown = false;
+
+    if (multiRedrawRaf != null) {
+      cancelAnimationFrame(multiRedrawRaf);
+      multiRedrawRaf = null;
+    }
+    if (pinnedRefreshRaf != null) {
+      cancelAnimationFrame(pinnedRefreshRaf);
+      pinnedRefreshRaf = null;
+    }
+    if (delayedRef) {
+      clearTimeout(delayedRef);
+      delayedRef = null;
+    }
+    preventPageScroll(false);
+  },
+
+  clear() {
+    cleanUpPinned();
+    cleanUp();
+    hoveringElement = null;
+
+    if (multiRedrawRaf != null) {
+      cancelAnimationFrame(multiRedrawRaf);
+      multiRedrawRaf = null;
+    }
+    if (pinnedRefreshRaf != null) {
+      cancelAnimationFrame(pinnedRefreshRaf);
+      pinnedRefreshRaf = null;
+    }
+  },
+
+  isEnabled(): boolean {
+    return started && enabled;
   },
 
   setMode(mode: SpacingMode) {
@@ -218,8 +285,8 @@ const Spacing: SpacingType = {
   },
 
   toggleMode(): SpacingMode {
-    const next: SpacingMode =
-      currentMode === 'default' ? 'click-multi' : 'default';
+    const order: SpacingMode[] = ['default', 'click-multi', 'size-only'];
+    const next = order[(order.indexOf(currentMode) + 1) % order.length];
     if (!started) {
       currentMode = next;
       return currentMode;
@@ -232,17 +299,28 @@ const Spacing: SpacingType = {
 function applyModeSwitch(next: SpacingMode) {
   if (next === currentMode) return;
 
+  const prev = currentMode;
+
   if (next === 'default') {
     cleanUpPinned();
     clearPlaceholderElement('preview');
     hoveringElement = null;
-  } else {
+    currentMode = next;
+    return;
+  }
+
+  if (prev === 'default') {
     cleanUp();
     clearPlaceholderElement('preview');
     hoveringElement = null;
+  } else {
+    // 在 click-multi 与 size-only 之间切换：保留 pinned 元素，仅清掉距离/预览以便重绘
+    clearPlaceholderElement('preview');
+    removeMarks();
   }
 
   currentMode = next;
+  redrawMultiUi();
 }
 
 function isSpacingChrome(el: HTMLElement | null): boolean {
@@ -262,8 +340,9 @@ function elementFromEvent(e: MouseEvent): HTMLElement | null {
   return e.target as HTMLElement | null;
 }
 
-function clickMultiHandler(e: MouseEvent) {
-  if (currentMode !== 'click-multi') return;
+function multiClickHandler(e: MouseEvent) {
+  if (!enabled) return;
+  if (!isMultiMode()) return;
   if (e.button !== 0) return;
 
   const el = elementFromEvent(e);
@@ -279,14 +358,16 @@ function clickMultiHandler(e: MouseEvent) {
 
   e.preventDefault();
   e.stopPropagation();
-  redrawClickMultiUi();
+  redrawMultiUi();
 }
 
 function unifiedKeyDown(e: KeyboardEvent) {
-  if (currentMode === 'click-multi' && e.key === 'Escape') {
+  if (!enabled) return;
+
+  if (isMultiMode() && e.key === 'Escape') {
     pinnedElements = [];
     clearPlaceholderElement('preview');
-    redrawClickMultiUi();
+    redrawMultiUi();
     return;
   }
 
@@ -315,6 +396,7 @@ function unifiedKeyDown(e: KeyboardEvent) {
 }
 
 function unifiedKeyUp(e: KeyboardEvent) {
+  if (!enabled) return;
   if (currentMode !== 'default') return;
 
   if (e.key === 'Alt') {
@@ -331,12 +413,14 @@ function unifiedKeyUp(e: KeyboardEvent) {
 }
 
 function unifiedMouseMove(e: MouseEvent) {
+  if (!enabled) return;
+
   const el = elementFromEvent(e);
 
   if (!el || isSpacingChrome(el)) {
-    if (currentMode === 'click-multi') {
+    if (isMultiMode()) {
       hoveringElement = null;
-      scheduleClickMultiRedraw();
+      scheduleMultiRedraw();
     }
     return;
   }
@@ -346,12 +430,14 @@ function unifiedMouseMove(e: MouseEvent) {
   if (currentMode === 'default' && active) {
     defaultCursorMovedCore();
   }
-  if (currentMode === 'click-multi') {
-    scheduleClickMultiRedraw();
+  if (isMultiMode()) {
+    scheduleMultiRedraw();
   }
 }
 
 function unifiedMouseOut(e: MouseEvent) {
+  if (!enabled) return;
+
   const to = e.relatedTarget as HTMLElement;
 
   if (currentMode === 'default') {
@@ -361,31 +447,32 @@ function unifiedMouseOut(e: MouseEvent) {
     }
   }
 
-  if (currentMode === 'click-multi') {
+  if (isMultiMode()) {
     if (!to || to.nodeName === 'HTML') {
       hoveringElement = null;
-      scheduleClickMultiRedraw();
+      scheduleMultiRedraw();
     }
   }
 }
 
-function scheduleClickMultiRedraw() {
-  if (currentMode !== 'click-multi') return;
-  if (clickMultiRedrawRaf != null) return;
-  clickMultiRedrawRaf = requestAnimationFrame(() => {
-    clickMultiRedrawRaf = null;
-    redrawClickMultiUi();
+function scheduleMultiRedraw() {
+  if (!isMultiMode()) return;
+  if (multiRedrawRaf != null) return;
+  multiRedrawRaf = requestAnimationFrame(() => {
+    multiRedrawRaf = null;
+    redrawMultiUi();
   });
 }
 
 function pinnedScrollOrResizeHandler() {
-  if (currentMode !== 'click-multi') return;
+  if (!enabled) return;
+  if (!isMultiMode()) return;
   if (pinnedElements.length === 0 && !hoveringElement) return;
 
   if (pinnedRefreshRaf != null) cancelAnimationFrame(pinnedRefreshRaf);
   pinnedRefreshRaf = requestAnimationFrame(() => {
     pinnedRefreshRaf = null;
-    redrawClickMultiUi();
+    redrawMultiUi();
   });
 }
 
@@ -396,8 +483,8 @@ function cleanUpPinned() {
   removeMarks();
 }
 
-function redrawClickMultiUi() {
-  if (currentMode !== 'click-multi') return;
+function redrawMultiUi() {
+  if (!isMultiMode()) return;
 
   clearPlaceholderElement('pinned');
   clearPlaceholderElement('preview');
@@ -408,8 +495,17 @@ function redrawClickMultiUi() {
     createPlaceholderElement('pinned', el, color);
   });
 
-  for (const [a, b] of computePinnedSpacingPairs(pinnedElements)) {
-    placeMarksBetweenElements(a, b);
+  // size-only 模式只标尺寸，不画任何元素之间的距离
+  const showDistances = currentMode === 'click-multi';
+
+  if (showDistances) {
+    for (const [a, b] of computePinnedSpacingPairs(pinnedElements)) {
+      const pc = asParentChild(a, b);
+      const blocked = pc
+        ? computeBlockedInsideDirections(pc[0], pc[1], pinnedElements)
+        : undefined;
+      placeMarksBetweenElements(a, b, blocked);
+    }
   }
 
   const hover = hoveringElement;
@@ -422,8 +518,15 @@ function redrawClickMultiUi() {
     const hoverPinned = pinnedElements.indexOf(hover) >= 0;
     if (!hoverPinned) {
       createPlaceholderElement('preview', hover, PREVIEW_COLOR);
-      for (const t of hoverSpacingTargets(hover, pinnedElements)) {
-        placeMarksBetweenElements(hover, t);
+      if (showDistances) {
+        const ctx = pinnedElements.concat(hover);
+        for (const t of hoverSpacingTargets(hover, pinnedElements)) {
+          const pc = asParentChild(hover, t);
+          const blocked = pc
+            ? computeBlockedInsideDirections(pc[0], pc[1], ctx)
+            : undefined;
+          placeMarksBetweenElements(hover, t, blocked);
+        }
       }
     }
   }
@@ -435,63 +538,130 @@ function formatDistance(pixels: number): string {
   return `${pixels}px`;
 }
 
-function placeMarksBetweenElements(a: HTMLElement, b: HTMLElement): void {
+type InsideMask = {
+  top?: boolean;
+  bottom?: boolean;
+  left?: boolean;
+  right?: boolean;
+};
+
+/**
+ * 父子配对时，若某个 inside 方向上夹着另一个 pinned 兄弟元素（且与 child 在
+ * 另一轴有投影重叠），则该方向的距离会「穿过」那个兄弟，视觉无意义。
+ * 这里把这种被遮挡的方向标出来，由调用方在绘制时跳过。
+ */
+function computeBlockedInsideDirections(
+  parent: HTMLElement,
+  child: HTMLElement,
+  context: HTMLElement[]
+): InsideMask {
+  const blocked: InsideMask = {};
+  if (context.length === 0) return blocked;
+
+  const parentRect = parent.getBoundingClientRect();
+  const childRect = child.getBoundingClientRect();
+
+  for (const sibling of context) {
+    if (sibling === parent || sibling === child) continue;
+    if (!isDomAncestor(parent, sibling)) continue; // 必须是 parent 的后代
+    if (isDomAncestor(child, sibling)) continue; // 不能是 child 的后代
+    if (isDomAncestor(sibling, child)) continue; // 不能是 child 的祖先
+
+    const sRect = sibling.getBoundingClientRect();
+
+    const horizontallyOverlapsChild =
+      Math.min(sRect.right, childRect.right) >
+      Math.max(sRect.left, childRect.left);
+    const verticallyOverlapsChild =
+      Math.min(sRect.bottom, childRect.bottom) >
+      Math.max(sRect.top, childRect.top);
+
+    if (
+      horizontallyOverlapsChild &&
+      sRect.top >= parentRect.top &&
+      sRect.bottom <= childRect.top
+    ) {
+      blocked.top = true;
+    }
+    if (
+      horizontallyOverlapsChild &&
+      sRect.top >= childRect.bottom &&
+      sRect.bottom <= parentRect.bottom
+    ) {
+      blocked.bottom = true;
+    }
+    if (
+      verticallyOverlapsChild &&
+      sRect.left >= parentRect.left &&
+      sRect.right <= childRect.left
+    ) {
+      blocked.left = true;
+    }
+    if (
+      verticallyOverlapsChild &&
+      sRect.left >= childRect.right &&
+      sRect.right <= parentRect.right
+    ) {
+      blocked.right = true;
+    }
+  }
+
+  return blocked;
+}
+
+function placeMarksBetweenElements(
+  a: HTMLElement,
+  b: HTMLElement,
+  blockedInside?: InsideMask
+): void {
   const selectedElementRect = a.getBoundingClientRect();
   const targetElementRect = b.getBoundingClientRect();
 
   const selected: Rect = new Rect(selectedElementRect);
   const target: Rect = new Rect(targetElementRect);
 
-  let top: number;
-  let bottom: number;
-  let left: number;
-  let right: number;
-  let outside: boolean;
-
+  // 包含/相交：保留四向 inside 距离绘制（被 blockedInside 标记的方向跳过）
   if (
     selected.containing(target) ||
     selected.inside(target) ||
     selected.colliding(target)
   ) {
-    top = Math.round(Math.abs(selectedElementRect.top - targetElementRect.top));
-    bottom = Math.round(
+    const top = Math.round(
+      Math.abs(selectedElementRect.top - targetElementRect.top)
+    );
+    const bottom = Math.round(
       Math.abs(selectedElementRect.bottom - targetElementRect.bottom)
     );
-    left = Math.round(
+    const left = Math.round(
       Math.abs(selectedElementRect.left - targetElementRect.left)
     );
-    right = Math.round(
+    const right = Math.round(
       Math.abs(selectedElementRect.right - targetElementRect.right)
     );
-    outside = false;
-  } else {
-    top = Math.round(
-      Math.abs(selectedElementRect.top - targetElementRect.bottom)
-    );
-    bottom = Math.round(
-      Math.abs(selectedElementRect.bottom - targetElementRect.top)
-    );
-    left = Math.round(
-      Math.abs(selectedElementRect.left - targetElementRect.right)
-    );
-    right = Math.round(
-      Math.abs(selectedElementRect.right - targetElementRect.left)
-    );
-    outside = true;
+
+    if (top > 0 && !blockedInside?.top)
+      placeMark(selected, target, 'top', formatDistance(top), false);
+    if (bottom > 0 && !blockedInside?.bottom)
+      placeMark(selected, target, 'bottom', formatDistance(bottom), false);
+    if (left > 0 && !blockedInside?.left)
+      placeMark(selected, target, 'left', formatDistance(left), false);
+    if (right > 0 && !blockedInside?.right)
+      placeMark(selected, target, 'right', formatDistance(right), false);
+    return;
   }
 
-  if (top > 0) {
-    placeMark(selected, target, 'top', formatDistance(top), outside);
-  }
-  if (bottom > 0) {
-    placeMark(selected, target, 'bottom', formatDistance(bottom), outside);
-  }
-  if (left > 0) {
-    placeMark(selected, target, 'left', formatDistance(left), outside);
-  }
-  if (right > 0) {
-    placeMark(selected, target, 'right', formatDistance(right), outside);
-  }
+  // 不重叠：交给 placeGapMarks 统一处理（支持「左右没相邻」等无投影重叠场景）
+  placeGapMarks(selected, target);
+}
+
+/** 给定任意两个元素，若是父子关系，返回 [parent, child]，否则返回 null */
+function asParentChild(
+  a: HTMLElement,
+  b: HTMLElement
+): [HTMLElement, HTMLElement] | null {
+  if (isDomAncestor(a, b)) return [a, b];
+  if (isDomAncestor(b, a)) return [b, a];
+  return null;
 }
 
 function cleanUp(): void {

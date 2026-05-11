@@ -15,12 +15,18 @@ export default class Rect {
     this.bottom = rect.bottom;
   }
 
+  /**
+   * 严格相交：仅当两个矩形有面积重叠时返回 true。
+   * 边缘恰好相邻（如 a.bottom === b.top）不算相交，避免把
+   * 上下/左右紧贴的元素误判为「inside」从而绘制出无意义的
+   * top-to-top / bottom-to-bottom 距离（数值恰为元素自身宽高）。
+   */
   colliding(other: Rect) {
     return !(
-      this.top > other.bottom ||
-      this.right < other.left ||
-      this.bottom < other.top ||
-      this.left > other.right
+      this.top >= other.bottom ||
+      this.right <= other.left ||
+      this.bottom <= other.top ||
+      this.left >= other.right
     );
   }
 
